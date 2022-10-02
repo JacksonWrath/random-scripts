@@ -50,13 +50,23 @@ def main():
     except libvirt.libvirtError as error:
         printLibvirtErrorAndExit(error)
 
-
     xml: str = domain.XMLDesc(0 | libvirt.VIR_DOMAIN_XML_INACTIVE)
     volumes = getVolumes(xml)
+    migrated_volumes = removeVolumesAlreadyMigrated(volumes, ARGS.pool, ARGS.filepath)
 
-    printParsedInfo(domain.name(), volumes, ARGS.pool, ARGS.filepath)
+    printParsedInfo(domain.name(), volumes, migrated_volumes, ARGS.pool, ARGS.filepath)
+
+    devs_with_ongoing_jobs = checkForOngoingBlockCopy(domain, volumes.keys())
+    if len(devs_with_ongoing_jobs):
+        print(f"\nOngoing migration(s) found for {domain.name()}. Resuming...")
+        print(SEPARATOR)
+        waitForAllBlockCopy(domain, devs_with_ongoing_jobs)
+        pivotAllBlockCopyJobs(domain, devs_with_ongoing_jobs)
+        print("Migration(s) finished. Execute the script again to start another.")
+        exit(0)
+    
     response = input("\nProceed? (y/N): ")
-    if response != "y":
+    if response.lower() != "y":
         exit(1)
 
     print(SEPARATOR)
@@ -72,15 +82,15 @@ def main():
     for target_dev, volume_description in volumes.items():
         dest_xml_param = getDestinationXML(volume_description, ARGS.pool, ARGS.filepath)
         domain.blockCopy(target_dev, dest_xml_param)
-        waitForBlockCopy(domain, target_dev)
-        domain.blockJobAbort(target_dev, 0 | libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_PIVOT)
+    waitForAllBlockCopy(domain, volumes.keys())
+    pivotAllBlockCopyJobs(domain, volumes.keys())
 
     new_xml: str = domain.XMLDesc(0 | libvirt.VIR_DOMAIN_XML_INACTIVE)
     connection.defineXML(new_xml)
     print("Complete!")
         
 
-def getVolumes(xml_desc: str) -> dict:
+def getVolumes(xml_desc: str) -> dict[str, DomainVolumeDesc]:
     domain_xml_root = ET.fromstring(xml_desc)
     devices_element = domain_xml_root.find("devices")
 
@@ -102,9 +112,29 @@ def getVolumes(xml_desc: str) -> dict:
     
     return disk_map
 
+def removeVolumesAlreadyMigrated(volumes: dict[str, DomainVolumeDesc], pool: str = None, filepath: str = None) -> dict[str, DomainVolumeDesc]:
+    if filepath is None == pool is None:
+        raise Exception("Must specify EITHER pool or filepath, but not both.")
+
+    devs_to_remove = []
+    migrated_volumes = {}
+    for target_dev, volume_description in volumes.items():
+        if filepath is not None:
+            if volume_description.vol_type == "file" and volume_description.vol_path == filepath:
+                devs_to_remove.append(target_dev)
+        else:
+            if volume_description.vol_type == "pool" and volume_description.vol_pool == pool:
+                devs_to_remove.append(target_dev)
+    
+    for target_dev in devs_to_remove:
+        migrated_volumes[target_dev] = volumes.pop(target_dev)
+
+    return migrated_volumes
+
+
 def getDestinationXML(volume_description: DomainVolumeDesc, pool: str = None, filepath: str = None) -> str:
     if filepath is None == pool is None:
-        raise Exception("Must specify EITHER pool and volume OR filepath, but not both.")
+        raise Exception("Must specify EITHER pool OR filepath, but not both.")
     
     if filepath is not None:
         dest_xml = "<disk type='file' device='disk'>"
@@ -119,6 +149,14 @@ def getDestinationXML(volume_description: DomainVolumeDesc, pool: str = None, fi
 
     return dest_xml
 
+def checkForOngoingBlockCopy(domain: libvirt.virDomain, target_devs: list[str]) -> list[str]:
+    devs_with_jobs = []
+    for target_dev in target_devs:
+        if len(domain.blockJobInfo(target_dev)):
+            devs_with_jobs.append(target_dev) 
+    return devs_with_jobs
+
+
 def waitForBlockCopy(domain: libvirt.virDomain, target_dev: str):
     while True:
         job_status = domain.blockJobInfo(target_dev)
@@ -131,15 +169,40 @@ def waitForBlockCopy(domain: libvirt.virDomain, target_dev: str):
             break
     print()
 
-def printParsedInfo(domain: str, volumes: dict[str, DomainVolumeDesc], pool: str, filepath: str):
+def waitForAllBlockCopy(domain: libvirt.virDomain, target_devs: list):
+    devs_complete = set()
+    while len(devs_complete) < len(target_devs):
+        print("\r", end="")
+        for target_dev in target_devs:
+            if target_dev in devs_complete:
+                print(f"Migrating {target_dev} -- 100%\t", end="")
+            else:
+                job_status = domain.blockJobInfo(target_dev)
+                if "cur" in job_status and job_status['cur'] < job_status['end']:
+                    progress = 100 * job_status['cur'] // job_status['end']
+                    print(f"Migrating {target_dev} -- {progress}%\t", end="")
+                else:
+                    devs_complete.add(target_dev)
+        time.sleep(1)
+    print()
+
+def pivotAllBlockCopyJobs(domain: libvirt.virDomain, target_devs: list):
+    for target_dev in target_devs:
+        domain.blockJobAbort(target_dev, 0 | libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_PIVOT)
+
+def printParsedInfo(domain: str, volumes: dict[str, DomainVolumeDesc], migrated_volumes: dict[str, DomainVolumeDesc], pool: str, filepath: str):
     print(f"\nWhat will happen:\n{SEPARATOR}\n")
     print(f"Domain name:\n{SEPARATOR}\n{domain}\n{SEPARATOR}\n")
     print(f"Volumes:")
     printVolumesAndDestinations(volumes, pool, filepath)
+    if migrated_volumes is not None and len(migrated_volumes): 
+        print("\nVolumes already migrated:")
+        printVolumesAndDestinations(migrated_volumes, pool, filepath)
+
 
 def printVolumesAndDestinations(disk_map: dict[str, DomainVolumeDesc], pool: str, filepath: str):
     if filepath is None == pool is None:
-        raise Exception("Must specify EITHER pool and volume OR filepath, but not both.")
+        raise Exception("Must specify EITHER pool OR filepath, but not both.")
 
     print(SEPARATOR)
     for target_id, disk_desc in disk_map.items():
