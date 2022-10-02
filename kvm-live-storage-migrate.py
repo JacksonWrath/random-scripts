@@ -56,6 +56,10 @@ def main():
 
     printParsedInfo(domain.name(), volumes, migrated_volumes, ARGS.pool, ARGS.filepath)
 
+    if not len(volumes):
+        print(f"\nAll disks already migrated.")
+        exit(0)
+
     devs_with_ongoing_jobs = checkForOngoingBlockCopy(domain, volumes.keys())
     if len(devs_with_ongoing_jobs):
         print(f"\nOngoing migration(s) found for {domain.name()}. Resuming...")
@@ -120,7 +124,7 @@ def removeVolumesAlreadyMigrated(volumes: dict[str, DomainVolumeDesc], pool: str
     migrated_volumes = {}
     for target_dev, volume_description in volumes.items():
         if filepath is not None:
-            if volume_description.vol_type == "file" and volume_description.vol_path == filepath:
+            if volume_description.vol_type == "file" and PurePosixPath(volume_description.vol_path) == PurePosixPath(filepath):
                 devs_to_remove.append(target_dev)
         else:
             if volume_description.vol_type == "pool" and volume_description.vol_pool == pool:
