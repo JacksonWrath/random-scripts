@@ -186,6 +186,7 @@ def waitForAllBlockCopy(domain: libvirt.virDomain, target_devs: list):
                     progress = 100 * job_status['cur'] // job_status['end']
                     print(f"Migrating {target_dev} -- {progress}%\t", end="")
                 else:
+                    print(f"Migrating {target_dev} -- 100%\t", end="")
                     devs_complete.add(target_dev)
         time.sleep(1)
     print()
