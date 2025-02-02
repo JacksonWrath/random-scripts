@@ -15,7 +15,10 @@ def main():
 
     dcmp = filecmp.dircmp(srcPathOne, srcPathTwo, shallow=SHALLOW)
 
-    print_diff_files(dcmp)
+    if print_diff_files(dcmp):
+        print("Folders are identical.")
+    else:
+        print("Something didn't match. Check output.")
 
 
 def print_diff_files(dcmp):
@@ -48,7 +51,9 @@ def print_diff_files(dcmp):
     print(f"{current_status}{padding}{diff_details}")
 
     for sub_dcmp in dcmp.subdirs.values():
-        print_diff_files(sub_dcmp)
+        identical = print_diff_files(sub_dcmp) and identical
+
+    return identical
 
 
 if __name__ == "__main__":
