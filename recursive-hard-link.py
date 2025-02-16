@@ -1,5 +1,9 @@
 #!/usr/bin/python3
 
+###
+# The destination path provided as an argument will contain all the contents of the current working directory
+###
+
 import os
 import sys
 
